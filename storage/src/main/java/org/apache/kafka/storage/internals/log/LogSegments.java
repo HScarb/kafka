@@ -37,6 +37,7 @@ import java.util.stream.Collectors;
 public class LogSegments {
 
     private final TopicPartition topicPartition;
+    /* Key：LogSegment 起始偏移量，Value：日志段 */
     /* the segments of the log with key being LogSegment base offset and value being a LogSegment */
     private final ConcurrentNavigableMap<Long, LogSegment> segments = new ConcurrentSkipListMap<>();
 

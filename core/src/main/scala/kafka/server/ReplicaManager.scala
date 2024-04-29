@@ -722,6 +722,10 @@ class ReplicaManager(val config: KafkaConfig,
   def tryCompleteActions(): Unit = defaultActionQueue.tryCompleteActions()
 
   /**
+   * 将消息追加到分区的leader副本，并等待消息被复制到其他副本；
+   * 当超时或满足所需的acks时，将触发回调函数；
+   * 如果回调函数本身已经在某个对象上同步，那么传递这个对象以避免死锁<br>
+   *
    * Append messages to leader replicas of the partition, and wait for them to be replicated to other replicas;
    * the callback function will be triggered either when timeout or the required acks are satisfied;
    * if the callback function itself is already synchronized on some object then pass this object to avoid deadlock.
@@ -783,6 +787,8 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   /**
+   * 处理生产请求<br>
+   *
    * Handles the produce request by starting any transactional verification before appending.
    *
    * @param timeout                       maximum time we will wait to append before returning

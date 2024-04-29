@@ -85,6 +85,8 @@ object KafkaRequestHandler {
 }
 
 /**
+ * 从 {@link RequestChannel} 中获取请求并调用 {@link KafkaApis} 处理请求
+ *
  * A thread that answers kafka requests.
  */
 class KafkaRequestHandler(
@@ -111,9 +113,11 @@ class KafkaRequestHandler(
       // time should be discounted by # threads.
       val startSelectTime = time.nanoseconds
 
+      // 从 RequestChannel.RequestQueue 中获取请求，通过 requestQueue.poll() 方法实现
       val req = requestChannel.receiveRequest(300)
       val endTime = time.nanoseconds
       val idleTime = endTime - startSelectTime
+      // 统计监控指标
       aggregateIdleMeter.mark(idleTime / totalHandlerThreads.get)
 
       req match {
@@ -157,6 +161,7 @@ class KafkaRequestHandler(
             request.requestDequeueTimeNanos = endTime
             trace(s"Kafka request handler $id on broker $brokerId handling request $request")
             threadCurrentRequest.set(request)
+            // 调用 KafkaAPis 类处理请求，会将相应写回对应的 RequestChannel.responseQueue 中，唤醒 Processor 处理
             apis.handle(request, requestLocal)
           } catch {
             case e: FatalExitError =>
@@ -194,6 +199,9 @@ class KafkaRequestHandler(
 
 }
 
+/**
+ * 简易版线程池，管理所有的 {@link KafkaRequestHandler} 线程
+ */
 class KafkaRequestHandlerPool(
   val brokerId: Int,
   val requestChannel: RequestChannel,

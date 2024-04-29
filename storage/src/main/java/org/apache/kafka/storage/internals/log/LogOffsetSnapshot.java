@@ -19,6 +19,7 @@ package org.apache.kafka.storage.internals.log;
 import java.util.Objects;
 
 /**
+ * 封装分区所有偏移量的元数据容器类
  * Container class which represents a snapshot of the significant offsets for a partition. This allows fetching
  * of these offsets atomically without the possibility of a leader change affecting their consistency relative
  * to each other. See {@link UnifiedLog#fetchOffsetSnapshot()}.

@@ -66,6 +66,7 @@ public final class LogFileUtils {
     }
 
     /**
+     * 幂等型或事务行 Producer 的快照文件
      * Returns a File instance with parent directory as logDir and the file name as producer snapshot file for the
      * given offset.
      *
@@ -78,6 +79,7 @@ public final class LogFileUtils {
     }
 
     /**
+     * 通过偏移量计算出对应的 LogSegment 文件名
      * Make log segment file name from offset bytes. All this does is pad out the offset number with zeros
      * so that ls sorts the files numerically.
      *

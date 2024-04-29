@@ -86,6 +86,7 @@ class LogLoader(
    *                                           overflow index offset
    */
   def load(): LoadedLogOffsets = {
+    // 遍历分区日志路径，移除上次 Failure 遗留下来的各种临时文件（.cleaned、.swap、.deleted 文件等）
     // First pass: through the files in the log directory and remove any temporary files
     // and find any interrupted swap operations
     val swapFiles = removeTempFilesAndCollectSwapFiles()
@@ -139,6 +140,7 @@ class LogLoader(
       }
     }
 
+    // 清空所有日志段对象，
     // Fourth pass: load all the log and index files.
     // We might encounter legacy log segments with offset overflow (KAFKA-6264). We need to split such segments. When
     // this happens, restart loading segment files from scratch.

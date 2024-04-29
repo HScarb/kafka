@@ -16,22 +16,11 @@
  */
 package org.apache.kafka.storage.internals.log;
 
-import java.io.Closeable;
-import java.io.File;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
-import java.nio.file.attribute.FileTime;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Optional;
-import java.util.OptionalLong;
-import java.util.concurrent.Callable;
-import java.util.concurrent.TimeUnit;
+import static java.util.Arrays.asList;
 
 import com.yammer.metrics.core.MetricName;
 import com.yammer.metrics.core.Timer;
+
 import org.apache.kafka.common.InvalidRecordException;
 import org.apache.kafka.common.errors.CorruptRecordException;
 import org.apache.kafka.common.record.FileLogInputStream.FileChannelRecordBatch;
@@ -48,7 +37,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
 
-import static java.util.Arrays.asList;
+import java.io.Closeable;
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.attribute.FileTime;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A segment of the log. Each segment has two components: a log and an index. The log is a FileRecords containing
@@ -102,13 +103,21 @@ public class LogSegment implements Closeable {
      * Create a LogSegment with the provided parameters.
      *
      * @param log The file records containing log entries
+     *            消息日志文件（baseOffset.log）
      * @param lazyOffsetIndex The offset index
+     *                        位移索引文件 （baseOffset.index）
      * @param lazyTimeIndex The timestamp index
+     *                      时间戳索引文件（baseOffset.timeindex）
      * @param txnIndex The transaction index
+     *                 已终止事务文件（baseOffset.txnindex）
      * @param baseOffset A lower bound on the offsets in this segment
+     *                   起始物理偏移量
      * @param indexIntervalBytes The approximate number of bytes between entries in the index
+     *                           日志段新增索引项的频率（Broker 端参数 log.index.interval.bytes 的值）
      * @param rollJitterMs The maximum random jitter subtracted from the scheduled segment roll time
+     *                     日志段新增倒计时的扰动值（在新增多个日志段时彼此岔开的时间），用于缓解磁盘 I/O 瓶颈
      * @param time The time instance
+     *             用于统计计时
      */
     public LogSegment(FileRecords log,
                       LazyIndex<OffsetIndex> lazyOffsetIndex,
@@ -232,15 +241,20 @@ public class LogSegment implements Closeable {
      * It is assumed this method is being called from within a lock, it is not thread-safe otherwise.
      *
      * @param largestOffset The last offset in the message set
+     *                      消息批次中消息的最大偏移量
      * @param largestTimestampMs The largest timestamp in the message set.
+     *                           消息批次中消息的最大时间戳
      * @param shallowOffsetOfMaxTimestamp The last offset of earliest batch with max timestamp in the messages to append.
+     *                                    消息批次中最大时间戳对应消息的偏移量
      * @param records The log entries to append.
+     *                要写入的消息集合
      * @throws LogSegmentOffsetOverflowException if the largest offset causes index offset overflow
      */
     public void append(long largestOffset,
                        long largestTimestampMs,
                        long shallowOffsetOfMaxTimestamp,
                        MemoryRecords records) throws IOException {
+        // 判断要写入的消息集合是否为空
         if (records.sizeInBytes() > 0) {
             LOGGER.trace("Inserting {} bytes at end offset {} at position {} with largest timestamp {} at offset {}",
                 records.sizeInBytes(), largestOffset, log.sizeInBytes(), largestTimestampMs, shallowOffsetOfMaxTimestamp);
@@ -248,25 +262,34 @@ public class LogSegment implements Closeable {
             if (physicalPosition == 0)
                 rollingBasedTimestamp = OptionalLong.of(largestTimestampMs);
 
+            // 确保要写入的消息集合中的最大偏移量在合法范围内
             ensureOffsetInRange(largestOffset);
 
+            // 真正写入消息集合
             // append the messages
             long appendedBytes = log.append(records);
             LOGGER.trace("Appended {} to {} at end offset {}", appendedBytes, log.file(), largestOffset);
+            // 更新 LogSegment 最大时间戳以及最大时间戳所属消息的偏移量
             // Update the in memory max timestamp and corresponding offset.
             if (largestTimestampMs > maxTimestampSoFar()) {
                 maxTimestampAndOffsetSoFar = new TimestampOffset(largestTimestampMs, shallowOffsetOfMaxTimestamp);
             }
+            // 更新索引项，LogSegment 每写入 4KB 就要写入一个索引项，同时清空写入字节数，以备下次重新累积计算
             // append an entry to the index (if needed)
             if (bytesSinceLastIndexEntry > indexIntervalBytes) {
                 offsetIndex().append(largestOffset, physicalPosition);
                 timeIndex().maybeAppend(maxTimestampSoFar(), shallowOffsetOfMaxTimestampSoFar());
                 bytesSinceLastIndexEntry = 0;
             }
+            // 更新写入字节数
             bytesSinceLastIndexEntry += records.sizeInBytes();
         }
     }
 
+    /**
+     * 判断偏移量在 LogSegment 中是否合法，
+     * 即 offset - baseOffset的值是不是介于 [0，Int.MAXVALUE] 之间
+     */
     private void ensureOffsetInRange(long offset) throws IOException {
         if (!canConvertToRelativeOffset(offset))
             throw new LogSegmentOffsetOverflowException(this, offset);
@@ -415,9 +438,13 @@ public class LogSegment implements Closeable {
      * This method is thread-safe.
      *
      * @param startOffset A lower bound on the first offset to include in the message set we read
+     *                    要读取的第一条消息的偏移量
      * @param maxSize The maximum number of bytes to include in the message set we read
+     *                能读取的最大字节数
      * @param maxPosition The maximum position in the log segment that should be exposed for read
+     *                    能读取到的最大文件位置
      * @param minOneMessage If this is true, the first message will be returned even if it exceeds `maxSize` (if one exists)
+     *                      是否在消息体过大时至少返回第一条消息（即使出现消息体字节数超过了 maxSize 的情形，仍返回至少一条消息）
      *
      * @return The fetched data and the offset metadata of the first message whose offset is >= startOffset,
      *         or null if the startOffset is larger than the largest offset in this log
@@ -426,6 +453,7 @@ public class LogSegment implements Closeable {
         if (maxSize < 0)
             throw new IllegalArgumentException("Invalid max size " + maxSize + " for log read from segment " + log);
 
+        // 根据偏移量定位要读取的物理文件位置
         LogOffsetPosition startOffsetAndSize = translateOffset(startOffset);
 
         // if the start position is already off the end of the log, return null
@@ -443,9 +471,11 @@ public class LogSegment implements Closeable {
         if (adjustedMaxSize == 0)
             return new FetchDataInfo(offsetMetadata, MemoryRecords.EMPTY);
 
+        // 计算要读取的总字节数
         // calculate the length of the message set to read based on whether or not they gave us a maxOffset
         int fetchSize = Math.min((int) (maxPosition - startPosition), adjustedMaxSize);
 
+        // 调用 FileRecords 的 slice 方法，从指定位置读取指定大小的消息集合
         return new FetchDataInfo(offsetMetadata, log.slice(startPosition, fetchSize),
             adjustedMaxSize < startOffsetAndSize.size, Optional.empty());
     }
@@ -470,6 +500,7 @@ public class LogSegment implements Closeable {
      * @throws LogSegmentOffsetOverflowException if the log segment contains an offset that causes the index offset to overflow
      */
     public int recover(ProducerStateManager producerStateManager, Optional<LeaderEpochFileCache> leaderEpochCache) throws IOException {
+        // 清空索引文件
         offsetIndex().reset();
         timeIndex().reset();
         txnIndex.reset();
@@ -477,29 +508,37 @@ public class LogSegment implements Closeable {
         int lastIndexEntry = 0;
         maxTimestampAndOffsetSoFar = TimestampOffset.UNKNOWN;
         try {
+            // 遍历所有 RecordBatch
             for (RecordBatch batch : log.batches()) {
+                // 确保消息 RecordBatch 合法：符合 Kafka 定义的二进制格式
                 batch.ensureValid();
+                // 最后一条消息的偏移量不能越界（与起始偏移量差值为正整数）
                 ensureOffsetInRange(batch.lastOffset());
 
+                // 更新遍历过程中观测到的最大时间戳以及所属消息的偏移量
                 // The max timestamp is exposed at the batch level, so no need to iterate the records
                 if (batch.maxTimestamp() > maxTimestampSoFar()) {
                     maxTimestampAndOffsetSoFar = new TimestampOffset(batch.maxTimestamp(), batch.lastOffset());
                 }
 
+                // 写入索引项
                 // Build offset index
                 if (validBytes - lastIndexEntry > indexIntervalBytes) {
                     offsetIndex().append(batch.lastOffset(), validBytes);
                     timeIndex().maybeAppend(maxTimestampSoFar(), shallowOffsetOfMaxTimestampSoFar());
                     lastIndexEntry = validBytes;
                 }
+                // 累加已读取消息的字节数
                 validBytes += batch.sizeInBytes();
 
                 if (batch.magic() >= RecordBatch.MAGIC_VALUE_V2) {
+                    // 更新 Leader Epoch 缓存
                     leaderEpochCache.ifPresent(cache -> {
                         if (batch.partitionLeaderEpoch() >= 0 &&
                                 (!cache.latestEpoch().isPresent() || batch.partitionLeaderEpoch() > cache.latestEpoch().getAsInt()))
                             cache.assign(batch.partitionLeaderEpoch(), batch.baseOffset());
                     });
+                    // 更新事务型 Producer 状态
                     updateProducerState(producerStateManager, batch);
                 }
             }
@@ -507,6 +546,7 @@ public class LogSegment implements Closeable {
             LOGGER.warn("Found invalid messages in log segment {} at byte offset {}.", log.file().getAbsolutePath(),
                 validBytes, e);
         }
+        // 如果总字节数比已读取字节数更大，需要截断到已读取字节数
         int truncated = log.sizeInBytes() - validBytes;
         if (truncated > 0)
             LOGGER.debug("Truncated {} invalid bytes at the end of segment {} during recovery", truncated, log.file().getAbsolutePath());

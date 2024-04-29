@@ -21,6 +21,7 @@ import org.apache.kafka.common.message.FetchResponseData;
 import java.util.Optional;
 
 /**
+ * 封装读取日志返回的数据及其元数据
  * Structure used for lower level reads using {@link kafka.cluster.Partition#fetchRecords()}.
  */
 public class LogReadInfo {

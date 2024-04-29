@@ -53,10 +53,13 @@ case class SplitSegmentResult(deletedSegments: Iterable[LogSegment], newSegments
  * NOTE: this class is not thread-safe, and it relies on the thread safety provided by the Log class.
  *
  * @param _dir The directory in which log segments are created.
+ *             Log 所在的文件夹路径，也就是 TopicPartition 的路径
  * @param config The log configuration settings
  * @param segments The non-empty log segments recovered from disk
+ *                 包含所有 LogSegment，以 Map 结构封装
  * @param recoveryPoint The offset at which to begin the next recovery i.e. the first offset which has not been flushed to disk
  * @param nextOffsetMetadata The offset where the next message could be appended
+ *                           下一条待插入消息的偏移量（LEO）
  * @param scheduler The thread pool scheduler used for background actions
  * @param time The time instance used for checking the clock
  * @param topicPartition The topic partition associated with this log
@@ -189,6 +192,7 @@ class LocalLog(@volatile private var _dir: File,
   private[log] def lastFlushTime: Long = lastFlushedTime.get
 
   /**
+   * 封装了下一条待插入消息的偏移量，包括 LEO
    * The offset metadata of the next message that will be appended to the log
    */
   private[log] def logEndOffsetMetadata: LogOffsetMetadata = nextOffsetMetadata

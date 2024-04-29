@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.OptionalInt;
 
 /**
+ * 保存一组待写入消息的元数据信息
  * Struct to hold various quantities we compute about each message set before appending to the log.
  */
 public class LogAppendInfo {

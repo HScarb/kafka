@@ -78,11 +78,13 @@ import scala.jdk.CollectionConverters._
  *                       - Earliest offset of the log in response to ListOffsetRequest. To avoid OffsetOutOfRange exception after user seeks to earliest offset,
  *                         we make sure that logStartOffset <= log's highWatermark
  *                       Other activities such as log cleaning are not affected by logStartOffset.
+ *                       当前 Log 最早的偏移量
  * @param localLog The LocalLog instance containing non-empty log segments recovered from disk
  * @param brokerTopicStats Container for Broker Topic Yammer Metrics
  * @param producerIdExpirationCheckIntervalMs How often to check for producer ids which need to be expired
  * @param leaderEpochCache The LeaderEpochFileCache instance (if any) containing state associated
  *                         with the provided logStartOffset and nextOffsetMetadata
+ *                         保存了分区 Leader 的 Epoch 值与对应偏移量的映射关系，用于判断出现 Failure 时是否进行日志阶段。
  * @param producerStateManager The ProducerStateManager instance containing state associated with the provided segments
  * @param _topicId optional Uuid to specify the topic ID for the topic if it exists. Should only be specified when
  *                first creating the log through Partition.makeLeader or Partition.makeFollower. When reloading a log,
@@ -136,6 +138,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
    */
   @volatile private var firstUnstableOffsetMetadata: Option[LogOffsetMetadata] = None
 
+  // 分区高水位值
   /* Keep track of the current high watermark in order to ensure that segments containing offsets at or above it are
    * not eligible for deletion. This means that the active segment is only eligible for deletion if the high watermark
    * equals the log end offset (which may never happen for a partition under consistent load). This is needed to
@@ -2333,6 +2336,9 @@ object UnifiedLog extends Logging {
 
 }
 
+/**
+ * 定义 Log 对象监控指标名称
+ */
 object LogMetricNames {
   val NumLogSegments: String = "NumLogSegments"
   val LogStartOffset: String = "LogStartOffset"
