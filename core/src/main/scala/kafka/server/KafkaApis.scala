@@ -90,6 +90,9 @@ import scala.util.{Failure, Success, Try}
 
 
 /**
+ * Kafka 服务端处理请求入口，负责将 {@link KafkaRequestHandler} 传过来的请求分发到不同的处理方法中。
+ * 分发的依据是 {@link RequestHeader} 的 apiKey
+ *
  * Logic to handle the various Kafka requests
  */
 class KafkaApis(val requestChannel: RequestChannel,
@@ -593,6 +596,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     else {
       val internalTopicsAllowed = request.header.clientId == AdminUtils.AdminClientId
 
+      // 将消息追加到分区的日志中（Leader副本）
       // call the replica manager to append messages to the replicas
       replicaManager.appendRecords(
         timeout = produceRequest.timeout.toLong,
