@@ -226,6 +226,7 @@ class Log(@volatile private var _dir: File,
 
   this.logIdent = s"[Log partition=$topicPartition, dir=${dir.getParent}] "
 
+  /* 保护 Log 对象的所有修改操作的锁 */
   /* A lock that guards all modifications to the log */
   private val lock = new Object
 
@@ -267,14 +268,18 @@ class Log(@volatile private var _dir: File,
   // Visible for testing
   @volatile var leaderEpochCache: Option[LeaderEpochFileCache] = None
 
+  // Log 初始化逻辑
   locally {
     val startMs = time.milliseconds
 
+    // 创建分区日志路径
     // create the log directory if it doesn't exist
     Files.createDirectories(dir.toPath)
 
+    // 初始化 Leader Epoch Cache
     initializeLeaderEpochCache()
 
+    // 加载所有日志段
     val nextOffset = loadSegments()
 
     /* Calculate the offset of the next message */
@@ -339,6 +344,7 @@ class Log(@volatile private var _dir: File,
    * @return the updated high watermark offset
    */
   def updateHighWatermark(hw: Long): Long = {
+    // 确保新高水位值介于 [Log Start Offset, Log End Offset] 之间
     val newHighWatermark = if (hw < logStartOffset)
       logStartOffset
     else if (hw > logEndOffset)
@@ -397,12 +403,18 @@ class Log(@volatile private var _dir: File,
     }
   }
 
+  /**
+   * 设置高水位值
+   * @param newHighWatermark
+   */
   private def updateHighWatermarkMetadata(newHighWatermark: LogOffsetMetadata): Unit = {
     if (newHighWatermark.messageOffset < 0)
       throw new IllegalArgumentException("High watermark offset should be non-negative")
 
+    // Log 对象修改时加锁
     lock synchronized {
       highWatermarkMetadata = newHighWatermark
+      // 处理事务状态管理器的高水位值更新逻辑
       producerStateManager.onHighWatermarkUpdated(newHighWatermark.messageOffset)
       maybeIncrementFirstUnstableOffset()
     }
@@ -518,6 +530,7 @@ class Log(@volatile private var _dir: File,
   }
 
   /**
+   * 删除上次 Failure 遗留的临时文件（.cleaned/.swap/.deleted）
    * Removes any temporary files found in log directory, and creates a list of all .swap files which could be swapped
    * in place of existing segment(s). For log splitting, we know that any .swap file whose base offset is higher than
    * the smallest offset .clean file could be part of an incomplete split operation. Such .swap files are also deleted
@@ -526,6 +539,7 @@ class Log(@volatile private var _dir: File,
    */
   private def removeTempFilesAndCollectSwapFiles(): Set[File] = {
 
+    // 用于删除 Log 对应的 Index 文件
     def deleteIndicesIfExist(baseFile: File, suffix: String = ""): Unit = {
       info(s"Deleting index files with suffix $suffix for baseFile $baseFile")
       val offset = offsetFromFile(baseFile)
@@ -538,15 +552,19 @@ class Log(@volatile private var _dir: File,
     val cleanFiles = mutable.Set[File]()
     var minCleanedFileOffset = Long.MaxValue
 
+    // 遍历分区日志目录下所有文件
     for (file <- dir.listFiles if file.isFile) {
       if (!file.canRead)
         throw new IOException(s"Could not read file $file")
       val filename = file.getName
       if (filename.endsWith(DeletedFileSuffix)) {
+        // 上次 Failure 遗留下来的文件，直接删除
         debug(s"Deleting stray temporary file ${file.getAbsolutePath}")
         Files.deleteIfExists(file.toPath)
       } else if (filename.endsWith(CleanedFileSuffix)) {
+        // 选取文件名中位移值最小的.cleaned文件，获取偏移量
         minCleanedFileOffset = Math.min(offsetFromFileName(filename), minCleanedFileOffset)
+        // 加入待删除文件集合
         cleanFiles += file
       } else if (filename.endsWith(SwapFileSuffix)) {
         // we crashed in the middle of a swap operation, to recover:
@@ -555,14 +573,18 @@ class Log(@volatile private var _dir: File,
         val baseFile = new File(CoreUtils.replaceSuffix(file.getPath, SwapFileSuffix, ""))
         info(s"Found file ${file.getAbsolutePath} from interrupted swap operation.")
         if (isIndexFile(baseFile)) {
+          // 如果该 .swap 文件原来是索引文件，删除原来的索引文件
           deleteIndicesIfExist(baseFile)
         } else if (isLogFile(baseFile)) {
+          // 如果该 .swap 文件原来是日志文件
           deleteIndicesIfExist(baseFile)
+          // 加入待恢复的 .swap 文件集合中
           swapFiles += file
         }
       }
     }
 
+    // 从待恢复 swap 集合中找出起始偏移量大于 minCleanedFileOffset 的文件，删除掉这些无效的 .swap 文件
     // KAFKA-6264: Delete all .swap files whose base offset is greater than the minimum .cleaned segment offset. Such .swap
     // files could be part of an incomplete split operation that could not complete. See Log#splitOverflowedSegment
     // for more details about the split operation.
@@ -574,12 +596,14 @@ class Log(@volatile private var _dir: File,
       Files.deleteIfExists(file.toPath)
     }
 
+    // 清楚所有待删除文件集合中的文件
     // Now that we have deleted all .swap files that constitute an incomplete split operation, let's delete all .clean files
     cleanFiles.foreach { file =>
       debug(s"Deleting stray .clean file ${file.getAbsolutePath}")
       Files.deleteIfExists(file.toPath)
     }
 
+    // 返回当前有效的 .swap 文件集合
     validSwapFiles
   }
 
@@ -591,6 +615,7 @@ class Log(@volatile private var _dir: File,
    * @throws LogSegmentOffsetOverflowException if the log directory contains a segment with messages that overflow the index offset
    */
   private def loadSegmentFiles(): Unit = {
+    // 按照 Segment 文件名中的位移排序，然后遍历每个文件
     // load segments in ascending order because transactional data from one segment may depend on the
     // segments that come before it
     for (file <- dir.listFiles.sortBy(_.getName) if file.isFile) {
@@ -598,6 +623,7 @@ class Log(@volatile private var _dir: File,
         // if it is an index file, make sure it has a corresponding .log file
         val offset = offsetFromFile(file)
         val logFile = Log.logFile(dir, offset)
+        // 删除无对应 LogSegment 的孤立 IndexFile
         if (!logFile.exists) {
           warn(s"Found an orphaned index file ${file.getAbsolutePath}, with no corresponding log file.")
           Files.deleteIfExists(file.toPath)
@@ -606,6 +632,7 @@ class Log(@volatile private var _dir: File,
         // if it's a log file, load the corresponding log segment
         val baseOffset = offsetFromFile(file)
         val timeIndexFileNewlyCreated = !Log.timeIndexFile(dir, baseOffset).exists()
+        // 创建对应的 LogSegment 对象
         val segment = LogSegment.open(dir = dir,
           baseOffset = baseOffset,
           config,
@@ -623,6 +650,7 @@ class Log(@volatile private var _dir: File,
               s"to ${e.getMessage}}, recovering segment and rebuilding index files...")
             recoverSegment(segment)
         }
+        // 将 LogSegment 加入 segments 中
         addSegment(segment)
       }
     }
@@ -647,6 +675,7 @@ class Log(@volatile private var _dir: File,
   }
 
   /**
+   * 处理有效的 .swap 文件集合
    * This method does not need to convert IOException to KafkaStorageException because it is only called before all logs
    * are loaded.
    * @throws LogSegmentOffsetOverflowException if the swap file contains messages that cause the log segment offset to
@@ -657,17 +686,22 @@ class Log(@volatile private var _dir: File,
    *                                           and manual intervention might be required to get out of it.
    */
   private def completeSwapOperations(swapFiles: Set[File]): Unit = {
+    // 遍历所有有效的 .swap 文件
     for (swapFile <- swapFiles) {
+      // 获取对应的日志文件和起始偏移量
       val logFile = new File(CoreUtils.replaceSuffix(swapFile.getPath, SwapFileSuffix, ""))
       val baseOffset = offsetFromFile(logFile)
+      // 创建对应的 LogSegment 实例
       val swapSegment = LogSegment.open(swapFile.getParentFile,
         baseOffset = baseOffset,
         config,
         time = time,
         fileSuffix = SwapFileSuffix)
       info(s"Found log file ${swapFile.getPath} from interrupted swap operation, repairing.")
+      // 恢复 LogSegment
       recoverSegment(swapSegment)
 
+      // 确认之前删除 LogSegment 是否成功，是否还存在老的 LogSegment 文件
       // We create swap files for two cases:
       // (1) Log cleaning where multiple segments are merged into one, and
       // (2) Log splitting where one segment is split into multiple.
@@ -679,6 +713,7 @@ class Log(@volatile private var _dir: File,
       val oldSegments = logSegments(swapSegment.baseOffset, swapSegment.readNextOffset).filter { segment =>
         segment.readNextOffset > swapSegment.baseOffset
       }
+      // 将生成的 .swap 文件加入到日志中，删除 swap 之前的 LogSegment
       replaceSegments(Seq(swapSegment), oldSegments.toSeq, isRecoveredSwapFile = true)
     }
   }
@@ -691,10 +726,12 @@ class Log(@volatile private var _dir: File,
    *                                           we find an unexpected number of .log files with overflow
    */
   private def loadSegments(): Long = {
+    // 移除之前 Failure 遗留的临时文件（.cleaned/.swap/.deleted）
     // first do a pass through the files in the log directory and remove any temporary files
     // and find any interrupted swap operations
     val swapFiles = removeTempFilesAndCollectSwapFiles()
 
+    // 清空所有 LogSegment，再次遍历分区路径，重建 segments map 并删除无对应 LogSegment 的孤立索引文件
     // Now do a second pass and load all the log and index files.
     // We might encounter legacy log segments with offset overflow (KAFKA-6264). We need to split such segments. When
     // this happens, restart loading segment files from scratch.
@@ -703,16 +740,19 @@ class Log(@volatile private var _dir: File,
       // loading of segments. In that case, we also need to close all segments that could have been left open in previous
       // call to loadSegmentFiles().
       logSegments.foreach(_.close())
+      // 清空 segments map
       segments.clear()
       loadSegmentFiles()
     }
 
+    // 完成未完成的 swap 操作
     // Finally, complete any interrupted swap operations. To be crash-safe,
     // log files that are replaced by the swap segment should be renamed to .deleted
     // before the swap file is restored as the new segment file.
     completeSwapOperations(swapFiles)
 
     if (!dir.getAbsolutePath.endsWith(Log.DeleteDirSuffix)) {
+      // 恢复 LogSegment 对象，返回恢复之后的分区 Log LEO
       val nextOffset = retryOnOffsetOverflow {
         recoverLog()
       }
@@ -767,8 +807,10 @@ class Log(@volatile private var _dir: File,
    * @throws LogSegmentOffsetOverflowException if we encountered a legacy segment with offset overflow
    */
   private def recoverLog(): Long = {
+    // 如果不存在 .kafka_cleanshutdown 后缀的文件
     // if we have the clean shutdown marker, skip recovery
     if (!hasCleanShutdownFile) {
+      // 获取上次 recoveryPoint 以外所有 unflushed LogSegment 对象
       // okay we need to actually recover this log
       val unflushed = logSegments(this.recoveryPoint, Long.MaxValue).iterator
       var truncated = false
@@ -786,6 +828,7 @@ class Log(@volatile private var _dir: File,
                 s"creating an empty one with starting offset $startOffset")
               segment.truncateTo(startOffset)
           }
+        // 如果有无效的消息导致被截断的字节数不为 0，直接删除剩余的 LogSegment
         if (truncatedBytes > 0) {
           // we had an invalid message, delete all remaining log
           warn(s"Corruption found in segment ${segment.baseOffset}, truncating to offset ${segment.readNextOffset}")
@@ -795,16 +838,20 @@ class Log(@volatile private var _dir: File,
       }
     }
 
+    // 如果 LogSegment 集合不为空
     if (logSegments.nonEmpty) {
       val logEndOffset = activeSegment.readNextOffset
       if (logEndOffset < logStartOffset) {
+        // 验证分区日志的 LEO 不能小于 Log Start Offset ，否则删除这些 LogSegment
         warn(s"Deleting all segments because logEndOffset ($logEndOffset) is smaller than logStartOffset ($logStartOffset). " +
           "This could happen if segment files were deleted from the file system.")
         removeAndDeleteSegments(logSegments, asyncDelete = true)
       }
     }
 
+    // 如果 LogSegment 集合为空
     if (logSegments.isEmpty) {
+      // 至少创建一个新的 LogSegment，以 logStartOffset 作为起始偏移量，添加到 segments 中
       // no existing segments, create a new mutable segment beginning at logStartOffset
       addSegment(LogSegment.open(dir = dir,
         baseOffset = logStartOffset,
@@ -815,6 +862,7 @@ class Log(@volatile private var _dir: File,
         preallocate = config.preallocate))
     }
 
+    // 更新 recoveryPoint，返回
     recoveryPoint = activeSegment.readNextOffset
     recoveryPoint
   }
