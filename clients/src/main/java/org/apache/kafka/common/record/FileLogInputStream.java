@@ -36,12 +36,15 @@ import static org.apache.kafka.common.record.Records.OFFSET_OFFSET;
 import static org.apache.kafka.common.record.Records.SIZE_OFFSET;
 
 /**
+ * 由 {@link FileChannel} 支持的日志输入流，主要作用是从 FileChannel 中读取 RecordBatch
  * A log input stream which is backed by a {@link FileChannel}.
  */
 public class FileLogInputStream implements LogInputStream<FileLogInputStream.FileChannelRecordBatch> {
+    /** 当前读取位置 **/
     private int position;
     private final int end;
     private final FileRecords fileRecords;
+    /** batch header buffer, offset(8byte) + size(4byte) + magic(1byte) **/
     private final ByteBuffer logHeaderBuffer = ByteBuffer.allocate(HEADER_SIZE_UP_TO_MAGIC);
 
     /**
@@ -61,12 +64,15 @@ public class FileLogInputStream implements LogInputStream<FileLogInputStream.Fil
     @Override
     public FileChannelRecordBatch nextBatch() throws IOException {
         FileChannel channel = fileRecords.channel();
+        // 检查当前位置是否超过文件末尾
         if (position >= end - HEADER_SIZE_UP_TO_MAGIC)
             return null;
 
+        // 读取 batch header
         logHeaderBuffer.rewind();
         Utils.readFullyOrFail(channel, logHeaderBuffer, position, "log header");
 
+        // 解析 batch header
         logHeaderBuffer.rewind();
         long offset = logHeaderBuffer.getLong(OFFSET_OFFSET);
         int size = logHeaderBuffer.getInt(SIZE_OFFSET);
@@ -82,11 +88,13 @@ public class FileLogInputStream implements LogInputStream<FileLogInputStream.Fil
         byte magic = logHeaderBuffer.get(MAGIC_OFFSET);
         final FileChannelRecordBatch batch;
 
+        // 根据 magic 判断 batch 版本，并组装
         if (magic < RecordBatch.MAGIC_VALUE_V2)
             batch = new LegacyFileChannelRecordBatch(offset, magic, fileRecords, position, size);
         else
             batch = new DefaultFileChannelRecordBatch(offset, magic, fileRecords, position, size);
 
+        // 累加读取位置
         position += batch.sizeInBytes();
         return batch;
     }

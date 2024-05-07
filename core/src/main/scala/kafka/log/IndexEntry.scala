@@ -29,7 +29,10 @@ sealed trait IndexEntry {
  * The mapping between a logical log offset and the physical position
  * in some log file of the beginning of the message set entry with the
  * given offset.
+ * @param offset 消息相对 LogSegment 的 offset
+ * @param position 消息所在 Log 的物理 offset
  */
+
 case class OffsetPosition(offset: Long, position: Int) extends IndexEntry {
   override def indexKey = offset
   override def indexValue = position.toLong
@@ -40,7 +43,9 @@ case class OffsetPosition(offset: Long, position: Int) extends IndexEntry {
  * The mapping between a timestamp to a message offset. The entry means that any message whose timestamp is greater
  * than that timestamp must be at or after that offset.
  * @param timestamp The max timestamp before the given offset.
+ *                  当前 offset 之前已追加消息的最大时间戳
  * @param offset The message offset.
+ *               消息相对 LogSegment 的 offset
  */
 case class TimestampOffset(timestamp: Long, offset: Long) extends IndexEntry {
   override def indexKey = timestamp

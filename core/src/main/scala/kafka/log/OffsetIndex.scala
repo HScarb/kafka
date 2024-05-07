@@ -25,6 +25,7 @@ import kafka.utils.Logging
 import org.apache.kafka.common.errors.InvalidOffsetException
 
 /**
+ * 于描述和管理索引文件数据，定义了对 index 文件的检索、追加，以及截断等功能
  * An index that maps offsets to physical file locations for a particular log segment. This index may be sparse:
  * that is it may not hold an entry for all messages in the log.
  *

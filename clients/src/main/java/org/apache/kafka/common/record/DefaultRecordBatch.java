@@ -302,6 +302,9 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
         };
     }
 
+    /**
+     * 迭代器，遍历 RecordBatch 中的 Record
+     */
     @Override
     public Iterator<Record> iterator() {
         if (count() == 0)
@@ -310,6 +313,8 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
         if (!isCompressed())
             return uncompressedIterator();
 
+        // 对于普通的迭代器，我们不能保证底层压缩流是关闭的，所以我们在这里解压完整的 record batch
+        // 在需要更低内存占用的场景，可以使用`streamingIterator`，代价是额外的复杂度
         // for a normal iterator, we cannot ensure that the underlying compression stream is closed,
         // so we decompress the full record set here. Use cases which call for a lower memory footprint
         // can use `streamingIterator` at the cost of additional complexity

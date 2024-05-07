@@ -37,19 +37,26 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
+ * 用于表示磁盘上的日志文件，提供日志数据的追加、读取、删除、查找、截断，以及刷盘等操作
  * A {@link Records} implementation backed by a file. An optional start and end position can be applied to this
  * instance to enable slicing a range of the log records.
  */
 public class FileRecords extends AbstractRecords implements Closeable {
+    /** 是否为日志文件分片或是整个日志文件 **/
     private final boolean isSlice;
+    /** 分片的起始位置 **/
     private final int start;
+    /** 分片的结束位置 **/
     private final int end;
 
     private final Iterable<FileLogInputStream.FileChannelRecordBatch> batches;
 
+    /** 如果是分片则表示分片的大小（end - start），如果不是分片则表示整个日志文件的大小 **/
     // mutable state
     private final AtomicInteger size;
+    /** 文件通道，用于读写 **/
     private final FileChannel channel;
+    /** 文件对象 **/
     private volatile File file;
 
     /**
@@ -461,7 +468,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
     }
 
     public static class LogOffsetPosition {
+        /** 消息逻辑偏移量，每条消息 +1 **/
         public final long offset;
+        /** 消息物理位置，每条消息增加消息大小 **/
         public final int position;
         public final int size;
 
