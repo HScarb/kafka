@@ -132,6 +132,7 @@ class LogManager(logDirs: Seq[File],
   }
 
   /**
+   * 保证每个 log 目录都存在并且可读
    * Create and check validity of the given directories that are not in the given offline directories, specifically:
    * <ol>
    * <li> Ensure that there are no duplicates in the directory list
@@ -252,6 +253,9 @@ class LogManager(logDirs: Seq[File],
   // Only for testing
   private[log] def hasLogsToBeDeleted: Boolean = !logsToBeDeleted.isEmpty
 
+  /**
+   * 从磁盘文件加载 Log 到内存
+   */
   private def loadLog(logDir: File, recoveryPoints: Map[TopicPartition, Long], logStartOffsets: Map[TopicPartition, Long]): Unit = {
     debug(s"Loading log '${logDir.getName}'")
     val topicPartition = Log.parseTopicPartitionName(logDir)
@@ -298,15 +302,19 @@ class LogManager(logDirs: Seq[File],
   private def loadLogs(): Unit = {
     info("Loading logs.")
     val startMs = time.milliseconds
+    // log 目录对应的线程池容器
     val threadPools = ArrayBuffer.empty[ExecutorService]
     val offlineDirs = mutable.Set.empty[(String, IOException)]
     val jobs = mutable.Map.empty[File, Seq[Future[_]]]
 
+    // 遍历所有 kafka log 目录
     for (dir <- liveLogDirs) {
       try {
+        // 为每个目录都创建指定线程数的线程池
         val pool = Executors.newFixedThreadPool(numRecoveryThreadsPerDataDir)
         threadPools.append(pool)
 
+        // 检测 broker 上次是否正常关闭，并设置 broker 状态（broker 正常关闭时会创建一个 .kafka_cleanshutdown 文件）
         val cleanShutdownFile = new File(dir, Log.CleanShutdownFile)
 
         if (cleanShutdownFile.exists) {
@@ -316,6 +324,7 @@ class LogManager(logDirs: Seq[File],
           brokerState.newState(RecoveringFromUncleanShutdown)
         }
 
+        // 加载每个 log 的 recoveryPoint，放入 Map
         var recoveryPoints = Map[TopicPartition, Long]()
         try {
           recoveryPoints = this.recoveryPointCheckpoints(dir).read
@@ -333,12 +342,15 @@ class LogManager(logDirs: Seq[File],
             warn(s"Error occurred while reading log-start-offset-checkpoint file of directory $dir", e)
         }
 
+        // 遍历 log 目录中的子文件，保留目录（TopicPartition），将文件过滤掉
         val jobsForDir = for {
           dirContent <- Option(dir.listFiles).toList
           logDir <- dirContent if logDir.isDirectory
         } yield {
+          // 为每个目录创建一个 Runnable 任务
           val runnable: Runnable = () => {
             try {
+              // 恢复单个 TopicPartition 的 Log
               loadLog(logDir, recoveryPoints, logStartOffsets)
             } catch {
               case e: IOException =>
@@ -348,6 +360,7 @@ class LogManager(logDirs: Seq[File],
           }
           runnable
         }
+        // 将 jobsForDir 中的所有任务放到线程池中执行，并将 Future 形成 Seq，保存到 jobs 中
         jobs(cleanShutdownFile) = jobsForDir.map(pool.submit)
       } catch {
         case e: IOException =>
@@ -357,8 +370,10 @@ class LogManager(logDirs: Seq[File],
     }
 
     try {
+      // 等待 jobs 中的 Runnable 完成
       for ((cleanShutdownFile, dirJobs) <- jobs) {
         dirJobs.foreach(_.get)
+        // 删除 cleanShutdownFile
         try {
           cleanShutdownFile.delete()
         } catch {
@@ -376,6 +391,7 @@ class LogManager(logDirs: Seq[File],
         error(s"There was an error in one of the threads during logs loading: ${e.getCause}")
         throw e.getCause
     } finally {
+      // 关闭全部线程池中线程
       threadPools.foreach(_.shutdown())
     }
 

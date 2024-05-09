@@ -924,17 +924,33 @@ class Log(@volatile private var _dir: File,
                                    reloadFromCleanShutdown: Boolean,
                                    producerStateManager: ProducerStateManager): Unit = lock synchronized {
     checkIfMemoryMappedBufferClosed()
+    // 获取 Log 的消息格式版本
     val messageFormatVersion = config.messageFormatVersion.recordVersion.value
+    // 所有 LogSegment
     val segments = logSegments
+    // 计算需要创建快照的偏移量
     val offsetsToSnapshot =
       if (segments.nonEmpty) {
+        // LogSegment 列表非空，获取倒数第二个 LogSegment 的 baseOffset、最后一个 LogSegment 的 baseOffset、lastOffset 的列表
         val nextLatestSegmentBaseOffset = lowerSegment(segments.last.baseOffset).map(_.baseOffset)
         Seq(nextLatestSegmentBaseOffset, Some(segments.last.baseOffset), Some(lastOffset))
       } else {
+        // LogSegment 为空，返回 lastOffset
         Seq(Some(lastOffset))
       }
     info(s"Loading producer state till offset $lastOffset with message format version $messageFormatVersion")
 
+    // 检查是否需要从头开始重建 Producer state
+    // 如果不存在 Producer snapshot，我们假定这是一个升级，从 Log 末尾创建新的快照。
+    // 不幸的是，我们无法区分升级和正常关闭的情况。可能 snapshot 从未被创建或通过截断被删除，导致丢失 Producer state。
+    //
+    // 在 Broker 升级时，我们希望在重建 Producer state 时避免扫描日志。基本思想是使用 Producer snapshot 的缺失去检测升级场景。
+    // 但是我们必须小心，不要在 Broker 异常关机的场景下做太多假设。我们预期在以下两种常见的升级场景中找不到 snapshot：
+    // 1. Broker 已经升级，但是主题仍然使用老的消息格式。
+    // 2. Broker 已经升级，主题使用新的消息格式，且正常关闭。
+    // 如果遇到这两种情况之一，我们跳过 Producer state 加载，并在 Log 结尾处写入新的 snapshot。
+    // 下次重新加载 Log 时，我们将使用此快照（或更高版本的快照）加载 Producer state。
+    // 如果没有快照文件，则必须从第一个 LogSegment 重建 Producer state。
     // We want to avoid unnecessary scanning of the log to build the producer state when the broker is being
     // upgraded. The basic idea is to use the absence of producer snapshot files to detect the upgrade case,
     // but we have to be careful not to assume too much in the presence of broker failures. The two most common
@@ -949,6 +965,8 @@ class Log(@volatile private var _dir: File,
     // from the first segment.
     if (messageFormatVersion < RecordBatch.MAGIC_VALUE_V2 ||
         (producerStateManager.latestSnapshotOffset.isEmpty && reloadFromCleanShutdown)) {
+      // 如果消息版本小于 2（Producer ID 和事务信息不可用），或者在正常关闭情况下没有找到 Producer snapshot，
+      // 为了避免扫描全部的 LogSegment，我们在最后两个 LogSegment 的起始 offset 位置进行空的快照。这可以避免在需要截断 Log 时的全扫描。
       // To avoid an expensive scan through all of the segments, we take empty snapshots from the start of the
       // last two segments and the last offset. This should avoid the full scan in the case that the log needs
       // truncation.
