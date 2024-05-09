@@ -942,15 +942,15 @@ class Log(@volatile private var _dir: File,
 
     // 检查是否需要从头开始重建 Producer state
     // 如果不存在 Producer snapshot，我们假定这是一个升级，从 Log 末尾创建新的快照。
-    // 不幸的是，我们无法区分升级和正常关闭的情况。可能 snapshot 从未被创建或通过截断被删除，导致丢失 Producer state。
+    // 不幸的是，可能出现 snapshot 从未被创建或通过截断被删除的情况，导致丢失 Producer state。
     //
     // 在 Broker 升级时，我们希望在重建 Producer state 时避免扫描日志。基本思想是使用 Producer snapshot 的缺失去检测升级场景。
     // 但是我们必须小心，不要在 Broker 异常关机的场景下做太多假设。我们预期在以下两种常见的升级场景中找不到 snapshot：
     // 1. Broker 已经升级，但是主题仍然使用老的消息格式。
     // 2. Broker 已经升级，主题使用新的消息格式，且正常关闭。
-    // 如果遇到这两种情况之一，我们跳过 Producer state 加载，并在 Log 结尾处写入新的 snapshot。
-    // 下次重新加载 Log 时，我们将使用此快照（或更高版本的快照）加载 Producer state。
-    // 如果没有快照文件，则必须从第一个 LogSegment 重建 Producer state。
+    // 如果遇到这两种情况之一，我们跳过 Producer state 加载，并在 Log 结尾处创建新的 snapshot。
+    // 下次重新加载 Log 时，我们将使用刚才创建的 snapshot（或更高版本的 snapshot）加载 Producer state。
+    // 在其他情况下，如果没有 snapshot，则必须从第一个 LogSegment 重建 Producer state。
     // We want to avoid unnecessary scanning of the log to build the producer state when the broker is being
     // upgraded. The basic idea is to use the absence of producer snapshot files to detect the upgrade case,
     // but we have to be careful not to assume too much in the presence of broker failures. The two most common
@@ -965,7 +965,7 @@ class Log(@volatile private var _dir: File,
     // from the first segment.
     if (messageFormatVersion < RecordBatch.MAGIC_VALUE_V2 ||
         (producerStateManager.latestSnapshotOffset.isEmpty && reloadFromCleanShutdown)) {
-      // 如果消息版本小于 2（Producer ID 和事务信息不可用），或者在正常关闭情况下没有找到 Producer snapshot，
+      // 升级场景：消息版本小于 2（Producer ID 和事务信息不可用），或者在正常关闭情况下没有找到 Producer snapshot，
       // 为了避免扫描全部的 LogSegment，我们在最后两个 LogSegment 的起始 offset 位置进行空的快照。这可以避免在需要截断 Log 时的全扫描。
       // To avoid an expensive scan through all of the segments, we take empty snapshots from the start of the
       // last two segments and the last offset. This should avoid the full scan in the case that the log needs
@@ -975,9 +975,14 @@ class Log(@volatile private var _dir: File,
         producerStateManager.takeSnapshot()
       }
     } else {
+      // 异常关闭场景
       val isEmptyBeforeTruncation = producerStateManager.isEmpty && producerStateManager.mapEndOffset >= lastOffset
       producerStateManager.truncateAndReload(logStartOffset, lastOffset, time.milliseconds())
 
+      // 全量重载 Producer state 的场景：
+      // 最后一个 snapshot 的 offset 小于 LEO（在首次启动时可能出现），且在截断之前有活动的生产者（在初始加载后进行截断）。
+      // 如果截断之前没有活动的生产者，那么截断对 Producer state 没有影响（尽管可能造成 ProducerId 比预期更早地过期），
+      // 我们可以跳过加载。这是针对尚未使用幂等/事务特性的用户的优化。
       // Only do the potentially expensive reloading if the last snapshot offset is lower than the log end
       // offset (which would be the case on first startup) and there were active producers prior to truncation
       // (which could be the case if truncating after initial loading). If there weren't, then truncating
@@ -1071,6 +1076,7 @@ class Log(@volatile private var _dir: File,
       checkIfMemoryMappedBufferClosed()
       producerExpireCheck.cancel(true)
       maybeHandleIOException(s"Error while renaming dir for $topicPartition in dir ${dir.getParent}") {
+        // 在
         // We take a snapshot at the last written offset to hopefully avoid the need to scan the log
         // after restarting and to ensure that we cannot inadvertently hit the upgrade optimization
         // (the clean shutdown file is written after the logs are all closed).

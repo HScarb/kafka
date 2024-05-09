@@ -407,10 +407,16 @@ object ProducerStateManager {
     }
   }
 
+  /**
+   * 快照当前的 Producer state，持久化到磁盘，以便在 broker 重启、宕机、升级时恢复
+   * @param file 快照文件
+   * @param entries 当前的 Producer state
+   */
   private def writeSnapshot(file: File, entries: mutable.Map[Long, ProducerStateEntry]): Unit = {
     val struct = new Struct(PidSnapshotMapSchema)
     struct.set(VersionField, ProducerSnapshotVersion)
     struct.set(CrcField, 0L) // we'll fill this after writing the entries
+    // 将生产者状态转换为一个数组，每个元素都是一个表示单个生产者状态的 Struct
     val entriesArray = entries.map {
       case (producerId, entry) =>
         val producerEntryStruct = struct.instance(ProducerEntriesField)
@@ -424,8 +430,10 @@ object ProducerStateManager {
           .set(CurrentTxnFirstOffsetField, entry.currentTxnFirstOffset.getOrElse(-1L))
         producerEntryStruct
     }.toArray
+    // 将生产者状态数组写入结果 Struct
     struct.set(ProducerEntriesField, entriesArray)
 
+    // 将 Struct 写入到 ByteBuffer 中
     val buffer = ByteBuffer.allocate(struct.sizeOf)
     struct.writeTo(buffer)
     buffer.flip()
@@ -434,6 +442,7 @@ object ProducerStateManager {
     val crc = Crc32C.compute(buffer, ProducerEntriesOffset, buffer.limit() - ProducerEntriesOffset)
     ByteUtils.writeUnsignedInt(buffer, CrcOffset, crc)
 
+    // 将内容写入快照文件
     val fileChannel = FileChannel.open(file.toPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
     try fileChannel.write(buffer)
     finally fileChannel.close()
@@ -462,6 +471,17 @@ object ProducerStateManager {
 }
 
 /**
+ * 维护 ProducerId 到最后追加条目的元数据的表（epoch，sequence number，last offset等）
+ *
+ * sequence number 是给定 identifier 成功追加到分区的最后一个数字。
+ * epoch 用于防止僵死的生产者。
+ * last offset 是最后一条成功追加到 partition 的消息的偏移量。
+ *
+ * 只要表中包含 ProducerId，对应的生产者就可以继续写入数据。
+ * 然而，ProducerId 可能会因为最近没有使用或者最后写入的条目已经从日志中删除（例如，如果保留策略是“delete”）而过期。
+ * 对于压缩的主题，log cleaner 会确保保留给定 ProducerId 的最新条目，前提是它没有因为保留时间到期而过期。
+ * 这确保了 ProducerId 在达到最大过期时间之前不会过期，或者如果主题也配置了删除，删除包含最后写入偏移量的段已被删除。
+ *
  * Maintains a mapping from ProducerIds to metadata about the last appended entries (e.g.
  * epoch, sequence number, last offset, etc.)
  *
@@ -487,6 +507,7 @@ class ProducerStateManager(val topicPartition: TopicPartition,
   this.logIdent = s"[ProducerStateManager partition=$topicPartition] "
 
   private val producers = mutable.Map.empty[Long, ProducerStateEntry]
+  /** 最新一次映射的偏移量 **/
   private var lastMapOffset = 0L
   private var lastSnapOffset = 0L
 
@@ -584,6 +605,11 @@ class ProducerStateManager(val topicPartition: TopicPartition,
   }
 
   /**
+   * 将 ProducerId 表截断到给定的 offset 范围，并从范围内最近的 snapshot 重新加载条目（如果有的话）。
+   * 我们删除 logStartOffset 之前的所有 snapshot 文件，但不删除 producer 表中的生产者状态。
+   * 这意味着内存中和磁盘上的状态可能会不同，如果 broker 故障转移或异常关机，那么任何未持久化在 snapshot 中的内存状态将会丢失，
+   * 这将导致 UNKNOWN_PRODUCER_ID 错误。注意，我们假设 LEO 小于或等于 HW。
+   *
    * Truncate the producer id mapping to the given offset range and reload the entries from the most recent
    * snapshot in range (if there is one). We delete snapshot files prior to the logStartOffset but do not remove
    * producer state from the map. This means that in-memory and on-disk state can diverge, and in the case of
