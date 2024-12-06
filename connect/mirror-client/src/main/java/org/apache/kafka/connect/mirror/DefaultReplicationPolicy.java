@@ -89,6 +89,10 @@ public class DefaultReplicationPolicy implements ReplicationPolicy, Configurable
         return internalSeparator() + "internal";
     }
 
+    /**
+     * 存储 GroupId 同步的消费进度。具体存储的信息包括 GroupId，Partition 以及在源集群和目标集群的消费位点，
+     * 此 Topic 中的信息由 MirrorCheckpointConnector 发出
+     */
     private String checkpointsTopicSuffix() {
         return internalSeparator() + "checkpoints" + internalSuffix();
     }

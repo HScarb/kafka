@@ -19,12 +19,15 @@ package org.apache.kafka.connect.runtime.isolation;
 import java.util.Locale;
 
 /**
+ * Connect 插件发现策略
  * Strategy to use to discover plugins usable on a Connect worker.
  * @see <a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-898%3A+Modernize+Connect+plugin+discovery">KIP-898</a>
  */
 public enum PluginDiscoveryMode {
 
     /**
+     * 仅通过反射扫描插件，这对应于 KIP-898 之前的 Connect 的传统行为。
+     * 不需要插件在编译时显式声明，只要插件类在类路径中可以用，反射就可以找到它们。
      * Scan for plugins reflectively. This corresponds to the legacy behavior of Connect prior to KIP-898.
      * <p>Note: the following plugins are still loaded using {@link java.util.ServiceLoader} in this mode:
      * <ul>
@@ -35,16 +38,19 @@ public enum PluginDiscoveryMode {
      */
     ONLY_SCAN,
     /**
+     * 默认的模式。通过反射和 ServiceLoader 扫描插件。如果有插件无法通过 ServiceLoader 使用，则发出警告。即兼容反射模式，
      * Scan for plugins reflectively and via {@link java.util.ServiceLoader}.
      * Emit warnings if one or more plugins is not available via {@link java.util.ServiceLoader}
      */
     HYBRID_WARN,
     /**
+     * 通过反射和 ServiceLoader 扫描插件。如果有插件无法通过 ServiceLoader 使用，则在启动期间失败。
      * Scan for plugins reflectively and via {@link java.util.ServiceLoader}.
      * Fail worker during startup if one or more plugins is not available via {@link java.util.ServiceLoader}
      */
     HYBRID_FAIL,
     /**
+     * 仅通过 ServiceLoader 发现插件。
      * Discover plugins via {@link java.util.ServiceLoader} only.
      * Plugins may not be usable if they are not available via {@link java.util.ServiceLoader}
      */

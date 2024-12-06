@@ -47,6 +47,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /**
+ * 网络请求客户都安，主要用于 Kafka 主题的管理，如查询、创建等
  * Client for outbound REST requests to other members of a Connect cluster
  * This class is thread-safe.
  */

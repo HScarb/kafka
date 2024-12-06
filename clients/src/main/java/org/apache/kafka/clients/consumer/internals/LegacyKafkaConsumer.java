@@ -660,15 +660,18 @@ public class LegacyKafkaConsumer<K, V> implements ConsumerDelegate<K, V> {
      * @throws KafkaException if the rebalance callback throws exception
      */
     private Fetch<K, V> pollForFetches(Timer timer) {
+        // 本次拉取的超时时间
         long pollTimeout = coordinator == null ? timer.remainingMs() :
                 Math.min(coordinator.timeToNextPoll(timer.currentTimeMs()), timer.remainingMs());
 
+        // 查看拉取缓冲区中已异步拉取的消息，如果已经有消息，直接返回
         // if data is available already, return it immediately
         final Fetch<K, V> fetch = fetcher.collectFetch();
         if (!fetch.isEmpty()) {
             return fetch;
         }
 
+        // 向 Broker 发送拉取请求（异步）
         // send any new fetches (won't resend pending fetches)
         sendFetches();
 
@@ -683,6 +686,7 @@ public class LegacyKafkaConsumer<K, V> implements ConsumerDelegate<K, V> {
 
         log.trace("Polling for fetches with timeout {}", pollTimeout);
 
+        // 通过 ConsumerNetworkClient 类发送请求
         Timer pollTimer = time.timer(pollTimeout);
         client.poll(pollTimer, () -> {
             // since a fetch might be completed by the background thread, we need this poll condition
@@ -691,6 +695,7 @@ public class LegacyKafkaConsumer<K, V> implements ConsumerDelegate<K, V> {
         });
         timer.update(pollTimer.currentTimeMs());
 
+        // 再次尝试从拉取缓冲区中获取已拉取的消息
         return fetcher.collectFetch();
     }
 

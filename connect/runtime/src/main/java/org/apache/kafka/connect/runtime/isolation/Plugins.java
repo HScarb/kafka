@@ -64,21 +64,37 @@ public class Plugins {
         this(props, Plugins.class.getClassLoader(), new ClassLoaderFactory());
     }
 
+    /**
+     * 扫描 Connector 插件，将插件的信息放入一个自定义的类加载器中，以便后续实例化插件的 Connector 类
+     */
     // VisibleForTesting
     @SuppressWarnings("this-escape")
     Plugins(Map<String, String> props, ClassLoader parent, ClassLoaderFactory factory) {
+        // 从配置文件中获取插件路径
         String pluginPath = WorkerConfig.pluginPath(props);
+        // 从配置文件获取插件发现策略
         PluginDiscoveryMode discoveryMode = WorkerConfig.pluginDiscovery(props);
+
+        // 返回插件包路径合集
         Set<Path> pluginLocations = PluginUtils.pluginLocations(pluginPath, false);
+        // 获取自定义类加载器，确保类加载隔离
         delegatingLoader = factory.newDelegatingClassLoader(parent);
         Set<PluginSource> pluginSources = PluginUtils.pluginSources(pluginLocations, delegatingLoader, factory);
         scanResult = initLoaders(pluginSources, discoveryMode);
     }
 
+    /**
+     * 从提供的插件源中发现插件，并将插件安装到自定义的类加载器中
+     *
+     * @param pluginSources 插件源
+     * @param discoveryMode 插件类发现模式
+     * @return 插件扫描结果
+     */
     public PluginScanResult initLoaders(Set<PluginSource> pluginSources, PluginDiscoveryMode discoveryMode) {
         PluginScanResult empty = new PluginScanResult(Collections.emptyList());
         PluginScanResult serviceLoadingScanResult;
         try {
+            // 如果插件类发现模式为允许用 ServiceLoad，使用 ServiceLoaderScanner 从提供的插件源中发现插件
             serviceLoadingScanResult = discoveryMode.serviceLoad() ?
                     new ServiceLoaderScanner().discoverPlugins(pluginSources) : empty;
         } catch (Throwable t) {
@@ -87,10 +103,14 @@ public class Plugins {
                     WorkerConfig.PLUGIN_DISCOVERY_CONFIG, discoveryMode,
                     WorkerConfig.PLUGIN_DISCOVERY_CONFIG, PluginDiscoveryMode.ONLY_SCAN), t);
         }
+        // 如果插件类发现模式允许反射扫描，使用 ReflectionScanner 从提供的插件源中发现插件
         PluginScanResult reflectiveScanResult = discoveryMode.reflectivelyScan() ?
                 new ReflectionScanner().discoverPlugins(pluginSources) : empty;
+        // 合并两种发现方式的插件结果
         PluginScanResult scanResult = new PluginScanResult(Arrays.asList(reflectiveScanResult, serviceLoadingScanResult));
+        // 如果发现模式是混合模式，检查是否有插件缺少 ServiceLoader manifest
         maybeReportHybridDiscoveryIssue(discoveryMode, serviceLoadingScanResult, scanResult);
+        // 将发现的插件安装到自定义的类加载器中
         delegatingLoader.installDiscoveredPlugins(scanResult);
         return scanResult;
     }
@@ -287,11 +307,19 @@ public class Plugins {
         return newPlugin(klass);
     }
 
+    /**
+     * 根据 Connector 的类名或别名，创建 Connector 实例
+     */
     public Connector newConnector(String connectorClassOrAlias) {
         Class<? extends Connector> klass = connectorClass(connectorClassOrAlias);
         return newPlugin(klass);
     }
 
+    /**
+     * 根据 Connector 的类名或别名，用类加载器加载，获取 Connector 的类
+     * @param connectorClassOrAlias Connector 的类名或别名
+     * @return Connector 的类
+     */
     public Class<? extends Connector> connectorClass(String connectorClassOrAlias) {
         Class<? extends Connector> klass;
         try {

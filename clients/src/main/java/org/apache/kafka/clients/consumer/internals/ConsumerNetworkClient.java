@@ -48,6 +48,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
+ * Consumer 与 Broker 网络通信实现，封装了 KafkaClient，提供了更高层次的异步接口
  * Higher level consumer access to the network layer with basic support for request futures. This class
  * is thread-safe, but provides no synchronization for response callbacks. This guarantees that no locks
  * are held when they are invoked.

@@ -90,7 +90,9 @@ public class EagerAssignor implements ConnectAssignor {
     private Map<String, ByteBuffer> performTaskAssignment(String leaderId, long maxOffset,
                                                           Map<String, ExtendedWorkerState> memberConfigs,
                                                           WorkerCoordinator coordinator) {
+        // 用于记录 Connector 分配结果
         Map<String, Collection<String>> connectorAssignments = new HashMap<>();
+        // 用于记录 Task 分配结果
         Map<String, Collection<ConnectorTaskId>> taskAssignments = new HashMap<>();
 
         // Perform round-robin task assignment. Assign all connectors and then all tasks because assigning both the
@@ -99,13 +101,16 @@ public class EagerAssignor implements ConnectAssignor {
         // connectors and only odd nodes will be assigned tasks, but tasks are, on average, actually more resource
         // intensive than connectors).
         List<String> connectorsSorted = sorted(coordinator.configSnapshot().connectors());
+        // 使用一个环形迭代器，将 connector 和 task 分别分配给不同的 worker
         CircularIterator<String> memberIt = new CircularIterator<>(sorted(memberConfigs.keySet()));
+        // 先分配 Connector
         for (String connectorId : connectorsSorted) {
             String connectorAssignedTo = memberIt.next();
             log.trace("Assigning connector {} to {}", connectorId, connectorAssignedTo);
             Collection<String> memberConnectors = connectorAssignments.computeIfAbsent(connectorAssignedTo, k -> new ArrayList<>());
             memberConnectors.add(connectorId);
         }
+        // 在分配具体的 Task，延续 member 迭代器中的顺序
         for (String connectorId : connectorsSorted) {
             for (ConnectorTaskId taskId : sorted(coordinator.configSnapshot().tasks(connectorId))) {
                 String taskAssignedTo = memberIt.next();
@@ -115,6 +120,7 @@ public class EagerAssignor implements ConnectAssignor {
             }
         }
 
+        // 序列化分配结果并返回
         coordinator.leaderState(new LeaderState(memberConfigs, connectorAssignments, taskAssignments));
 
         return fillAssignmentsAndSerialize(memberConfigs.keySet(), Assignment.NO_ERROR,

@@ -31,7 +31,13 @@ import java.util.Collections;
 import static org.apache.kafka.connect.mirror.Heartbeat.SOURCE_CLUSTER_ALIAS_KEY;
 import static org.apache.kafka.connect.mirror.Heartbeat.TARGET_CLUSTER_ALIAS_KEY;
 
-/** Emits heartbeats to Kafka.
+/**
+ * 定时往源集群中发送心跳，验证和监控两级集群之间连接和迁移任务的运行情况
+ * 每 20 秒会生成一条心跳消息，心跳消息包含一条当时的时间戳。
+ * 这样通过在目标集群查看被同步过来的 heartbeat Topic 中的消息，即可查看当前消息同步状况。
+ * Heartbeat{sourceClusterAlias=A, targetClusterAlias=B, timestamp=1712564822022}
+ * Heartbeat{sourceClusterAlias=A, targetClusterAlias=B, timestamp=1712564842185}
+ * Emits heartbeats to Kafka.
  *
  *  @see MirrorHeartbeatConfig for supported config properties.
  */

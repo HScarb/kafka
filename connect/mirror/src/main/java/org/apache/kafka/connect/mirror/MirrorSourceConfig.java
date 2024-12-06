@@ -134,6 +134,9 @@ public class MirrorSourceConfig extends MirrorConnectorConfig {
         return props;
     }
 
+    /**
+     * Offset 同步 Topic，存储消息在源集群和目标集群之间同步的 offset 映射信息（即 OffsetSync 消息）用于消费位点翻译。
+     */
     String offsetSyncsTopic() {
         String otherClusterAlias = SOURCE_CLUSTER_ALIAS_DEFAULT.equals(offsetSyncsTopicLocation())
                 ? targetClusterAlias()

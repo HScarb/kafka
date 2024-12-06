@@ -45,7 +45,9 @@ import static org.apache.kafka.connect.mirror.Checkpoint.CONSUMER_GROUP_ID_KEY;
 import static org.apache.kafka.connect.mirror.MirrorUtils.TOPIC_KEY;
 import static org.apache.kafka.connect.mirror.MirrorUtils.adminCall;
 
-/** Replicate consumer group state between clusters. Emits checkpoint records.
+/**
+ * 将源集群的消费位点翻译并同步到目标集群
+ * Replicate consumer group state between clusters. Emits checkpoint records.
  *
  *  @see MirrorCheckpointConfig for supported config properties.
  */

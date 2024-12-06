@@ -57,6 +57,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 
 /**
+ * 用于管理和存储 Connector 的偏移量，默认保存的 Topic 名称为：offset.storage.topic
  * <p>
  *     Implementation of OffsetBackingStore that uses a Kafka topic to store offset data.
  * </p>

@@ -79,18 +79,23 @@ public class ConnectDistributed extends AbstractConnectCli<DistributedConfig> {
         adminProps.put(CLIENT_ID_CONFIG, clientIdBase + "shared-admin");
         SharedTopicAdmin sharedAdmin = new SharedTopicAdmin(adminProps);
 
+        // 创建 KafkaOffsetBackingStore，用于保存每个 Connector 当前正在处理的源的偏移量
+        // 保存在管理 Kafka 的 Topic：offset.storage.topic
         KafkaOffsetBackingStore offsetBackingStore = new KafkaOffsetBackingStore(sharedAdmin, () -> clientIdBase,
                 plugins.newInternalConverter(true, JsonConverter.class.getName(),
                         Collections.singletonMap(JsonConverterConfig.SCHEMAS_ENABLE_CONFIG, "false")));
         offsetBackingStore.configure(config);
 
+        // 创建 Worker 并初始化，Worker 起多线程运行多个数据同步 Task
         Worker worker = new Worker(workerId, Time.SYSTEM, plugins, config, offsetBackingStore, connectorClientConfigOverridePolicy);
         WorkerConfigTransformer configTransformer = worker.configTransformer();
 
         Converter internalValueConverter = worker.getInternalValueConverter();
+        // 创建 StatusBackingStore，用于保存 Connector 和 Task 的状态，保存在管理 Kafka 的 Topic：status.storage.topic
         StatusBackingStore statusBackingStore = new KafkaStatusBackingStore(Time.SYSTEM, internalValueConverter, sharedAdmin, clientIdBase);
         statusBackingStore.configure(config);
 
+        // 创建 ConfigBackingStore，用于保存 Connector 和 Task 的配置信息，保存在管理 Kafka 的 Topic：config.storage.topic
         ConfigBackingStore configBackingStore = new KafkaConfigBackingStore(
                 internalValueConverter,
                 config,
@@ -98,6 +103,7 @@ public class ConnectDistributed extends AbstractConnectCli<DistributedConfig> {
                 sharedAdmin,
                 clientIdBase);
 
+        // 创建分布式 Kafka Connect 的 Herder（管理者）
         // Pass the shared admin to the distributed herder as an additional AutoCloseable object that should be closed when the
         // herder is stopped. This is easier than having to track and own the lifecycle ourselves.
         return new DistributedHerder(config, Time.SYSTEM, worker,

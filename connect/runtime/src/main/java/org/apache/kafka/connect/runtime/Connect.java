@@ -26,6 +26,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
+ * Kafka Connect 实例，管理 Kafka Connect 运行过程中的所有组件（herder、worker、storage、command interface）的生命周期。
  * This class ties together all the components of a Kafka Connect process (herder, worker,
  * storage, command interface), managing their lifecycle.
  */

@@ -53,6 +53,9 @@ import java.util.function.Supplier;
 import static org.apache.kafka.common.utils.Utils.UncheckedCloseable;
 
 /**
+ * 这个类管理与管理 Kafka Broker 的协调过程，以实现 Connect 集群成员身份的协调。
+ * 它将实现 GroupMember 协议的 Coordinator 与驱动与 GroupCoordinator Broker 连接所需的所有其他部分组合在一起。
+ * 该类将所有网络操作隔离到由该类管理的单个线程中，GroupMember 事件的更高级别操作由 Herder 处理。
  * This class manages the coordination process with brokers for the Connect cluster group membership. It ties together
  * the Coordinator, which implements the group member protocol, with all the other pieces needed to drive the connection
  * to the group coordinator broker. This isolates all the networking to a single thread managed by this class, with
@@ -172,6 +175,7 @@ public class WorkerGroupMember {
     }
 
     /**
+     * 从 {@link #poll(long, Supplier)} 方法中唤醒 member，抛出一个 {@link org.apache.kafka.common.errors.WakeupException}
      * Interrupt any running poll() calls, causing a WakeupException to be thrown in the thread invoking that method.
      */
     public void wakeup() {

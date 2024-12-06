@@ -481,6 +481,9 @@ public abstract class AbstractHerder implements Herder, TaskStatus.Listener, Con
             || SinkConnectorConfig.hasDlqTopicConfig(connProps);
     }
 
+    /**
+     * 校验 Connector 配置参数，包括检查源和目标集群连通性等
+     */
     ConfigInfos validateConnectorConfig(
             Map<String, String> connectorProps,
             Function<String, TemporaryStage> reportStage,

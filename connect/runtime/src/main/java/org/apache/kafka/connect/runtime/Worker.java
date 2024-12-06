@@ -125,6 +125,7 @@ import java.util.stream.IntStream;
 import static org.apache.kafka.clients.CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG;
 
 /**
+ * Worker 用多个线程来运行多个数据同步任务
  * <p>
  * Worker runs a (dynamic) set of tasks in a set of threads, doing the work of actually moving
  * data to/from Kafka.

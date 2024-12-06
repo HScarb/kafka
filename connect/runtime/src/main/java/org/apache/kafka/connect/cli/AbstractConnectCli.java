@@ -103,6 +103,7 @@ public abstract class AbstractConnectCli<T extends WorkerConfig> {
     }
 
     /**
+     * 初始化、启动 Kafka Connect 实例
      * Initialize and start an instance of {@link Connect}
      *
      * @param workerProps the worker properties map used to initialize the {@link WorkerConfig}
@@ -117,14 +118,17 @@ public abstract class AbstractConnectCli<T extends WorkerConfig> {
         WorkerInfo initInfo = new WorkerInfo();
         initInfo.logAll();
 
+        // 扫描 Connector 插件目录，加载插件信息到自定义类加载器
         log.info("Scanning for plugin classes. This might take a moment ...");
         Plugins plugins = new Plugins(workerProps);
         plugins.compareAndSwapWithDelegatingLoader();
         T config = createConfig(workerProps);
         log.debug("Kafka cluster ID: {}", config.kafkaClusterId());
 
+        // 初始化 Kafka 网络请求客户端，主要用于 Kafka 主题的管理，如查询、创建等
         RestClient restClient = new RestClient(config);
 
+        // 初始化 RestServer，为 Jetty Web 客户端
         ConnectRestServer restServer = new ConnectRestServer(config.rebalanceTimeout(), restClient, config.originals());
         restServer.initializeServer();
 

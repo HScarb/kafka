@@ -199,6 +199,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     // To handle most external requests, like creating or destroying a connector, we can use a generic request where
     // the caller specifies all the code that should be executed.
     final NavigableSet<DistributedHerderRequest> requests = new ConcurrentSkipListSet<>();
+    // Connector 配置更新表，保存需要更新配置（或新增）的 Connector 名称
     // Config updates can be collected and applied together when possible. Also, we need to take care to rebalance when
     // needed (e.g. task reconfiguration, which requires everyone to coordinate offset commits).
     private Set<String> connectorConfigUpdates = new HashSet<>();
@@ -402,6 +403,8 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         // blocking up this thread (especially those in callbacks due to rebalance events).
 
         try {
+            // 尝试在指定超时时间内读取到配置日志（配置存储在 Kafka 的 Topic 中）的末尾。如果不成功，当前的 Worker 会离开集群并等待一段时间再尝试加入。
+            // 这确保了 Worker 再继续执行任务之前同步了最新的配置。
             // if we failed to read to end of log before, we need to make sure the issue was resolved before joining group
             // Joining and immediately leaving for failure to read configs is exceedingly impolite
             if (!canReadConfigs) {
@@ -412,10 +415,13 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                 }
             }
 
+            // 确保当前节点状态为活跃且处于集群中，如果不是，重启并重新加入集群
             log.debug("Ensuring group membership is still active");
             String stageDescription = "ensuring membership in the cluster";
+            // ensureActive 会调用 RebalanceListener#onAssigned 方法触发重平衡回调
             member.ensureActive(() -> new TickThreadStage(stageDescription));
             completeTickThreadStage();
+            // 处理 Connect 集群完成重平衡后的操作
             // Ensure we're in a good state in our group. If not restart and everything should be setup to rejoin
             if (!handleRebalanceCompleted()) return;
         } catch (WakeupException e) {
@@ -450,6 +456,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
         long now = time.milliseconds();
 
+        // 检查密钥轮换
         if (checkForKeyRotation(now)) {
             log.debug("Distributing new session key");
             keyExpiration = Long.MAX_VALUE;
@@ -466,6 +473,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             }
         }
 
+        // 处理所有外部请求
         // Process any external requests
         // TODO: Some of these can be performed concurrently or even optimized away entirely.
         //       For example, if three different connectors are slated to be restarted, it's fine to
@@ -475,12 +483,15 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         //       most-recently one.
         Long scheduledTick = null;
         while (true) {
+            // 查看请求队列中的第一个请求
             final DistributedHerderRequest next = peekWithoutException();
             if (next == null) {
                 break;
             } else if (now >= next.at) {
+                // 已经达到或已经过了下一个请求的预定的执行时间，说明要执行该请求，从请求队列中移除它
                 currentRequest = requests.pollFirst();
             } else {
+                // 当前还没有到下一个请求预定的执行时间，跳出循环
                 scheduledTick = next.at;
                 break;
             }
@@ -488,9 +499,11 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             runRequest(next.action(), next.callback());
         }
 
+        // 处理 Connector 重启请求
         // Process all pending connector restart requests
         processRestartRequests();
 
+        // 处理重平衡，如果需要重平衡，则安排重平衡
         if (scheduledRebalance < Long.MAX_VALUE) {
             scheduledTick = scheduledTick != null ? Math.min(scheduledTick, scheduledRebalance) : scheduledRebalance;
             rebalanceResolved = false;
@@ -503,6 +516,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                     keyExpiration, now, scheduledTick);
         }
 
+        // 处理配置更新
         // Process any configuration updates
         AtomicReference<Set<String>> connectorConfigUpdatesCopy = new AtomicReference<>();
         AtomicReference<Set<String>> connectorTargetStateChangesCopy = new AtomicReference<>();
@@ -548,12 +562,14 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
         // Let the group take any actions it needs to
         try {
+            // 计算下一个请求的超时时间
             long nextRequestTimeoutMs = scheduledTick != null ? Math.max(scheduledTick - time.milliseconds(), 0L) : Long.MAX_VALUE;
             log.trace("Polling for group activity; will wait for {}ms or until poll is interrupted by "
                     + "either config backing store updates or a new external request",
                     nextRequestTimeoutMs);
             String pollDurationDescription = scheduledTick != null ? "for up to " + nextRequestTimeoutMs + "ms or " : "";
             String stageDescription = "polling the group coordinator " + pollDurationDescription + "until interrupted";
+            // 执行轮询
             member.poll(nextRequestTimeoutMs, () -> new TickThreadStage(stageDescription));
             completeTickThreadStage();
             // Ensure we're in a good state in our group. If not restart and everything should be setup to rejoin
@@ -611,6 +627,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             configState = configBackingStore.snapshot();
 
             if (needsReconfigRebalance) {
+                // 需要重平衡
                 // Task reconfigs require a rebalance. Request the rebalance, clean out state, and then restart
                 // this loop, which will then ensure the rebalance occurs without any other requests being
                 // processed until it completes.
@@ -623,6 +640,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                 connectorTargetStateChanges.clear();
                 return true;
             } else {
+                // 不需要重平衡，将更新的配置复制到两个入参中
                 if (!connectorConfigUpdates.isEmpty()) {
                     // We can't start/stop while locked since starting connectors can cause task updates that will
                     // require writing configs, which in turn make callbacks into this class from another thread that
@@ -698,6 +716,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     }
 
     private void processConnectorConfigUpdates(Set<String> connectorConfigUpdates) {
+        // 更新分配给本地 Worker 的 Connector。先获取本地 Connector
         // If we only have connector config updates, we can just bounce the updated connectors that are
         // currently assigned to this worker.
         Set<String> localConnectors = assignment == null ? Collections.emptySet() : new HashSet<>(assignment.connectors());
@@ -706,23 +725,29 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                 + "currently-owned connectors are {}, and to-be-updated connectors are {}",
                 localConnectors,
                 connectorConfigUpdates);
+        // 遍历需要更新配置的 Connector 名称
         for (String connectorName : connectorConfigUpdates) {
             if (!localConnectors.contains(connectorName)) {
+                // 如果连接器不在本地工作器拥有的连接器集合中，跳过该连接器
                 log.trace("Skipping config update for connector {} as it is not owned by this worker",
                         connectorName);
                 continue;
             }
+            // 检查 configState 中是否包含该 Connector
             boolean remains = configState.contains(connectorName);
             log.info("Handling connector-only config update by {} connector {}",
                     remains ? "restarting" : "stopping", connectorName);
             try (TickThreadStage stage = new TickThreadStage("stopping connector " + connectorName)) {
+                // 停止 Connector
                 worker.stopAndAwaitConnector(connectorName);
             }
+            // 如果 Connector 存在，将它的启动回调函数添加到需要重新启动的 Connector 集合中
             // The update may be a deletion, so verify we actually need to restart the connector
             if (remains) {
                 connectorsToStart.add(getConnectorStartingCallable(connectorName));
             }
         }
+        // 重新启动那些更新了配置（并且不是删除）的 Connector
         String stageDescription = "restarting " + connectorsToStart.size() + " reconfigured connectors";
         startAndStop(connectorsToStart, stageDescription);
     }
@@ -1094,8 +1119,11 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     public void putConnectorConfig(final String connName, final Map<String, String> config, final TargetState targetState,
                                    final boolean allowReplace, final Callback<Created<ConnectorInfo>> callback) {
         log.trace("Submitting connector config write request {}", connName);
+        // 这里 addRequest 添加的是 validateConnectorConfig 这个回调函数
         addRequest(
             () -> {
+                // 校验 Connector 配置参数，包括检查源和目标集群连通性等
+                // validateConnectorConfig 验证成功之后会执行另一个 Lambda 回调函数，在该函数中继续进行 addRequest
                 validateConnectorConfig(config, callback.chainStaging((error, configInfos) -> {
                     if (error != null) {
                         callback.onCompletion(error, null);
@@ -1826,12 +1854,15 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     }
 
     /**
+     * 尝试在指定超时时间内读取到配置日志（配置存储在 Kafka 的 Topic 中）的末尾。如果不成功，当前的 Worker 会离开集群并等待一段时间再尝试加入。
+     * 这确保了 Worker 再继续执行任务之前同步了最新的配置。
      * Try to read to the end of the config log within the given timeout. If unsuccessful, leave the group
      * and wait for a brief backoff period before returning
      * @param timeoutMs maximum time to wait to sync to the end of the log
      * @return true if successful, false if timed out
      */
     private boolean readConfigToEnd(long timeoutMs) {
+        // 检查当前读取到的配置偏移量是否小于组分配的偏移量
         if (configState.offset() < assignment.offset()) {
             log.info("Current config state offset {} is behind group assignment {}, reading to end of config log", configState.offset(), assignment.offset());
         } else {
@@ -1920,6 +1951,9 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         }
     }
 
+    /**
+     * 新建、启动 Connector、Task 实例的入口
+     */
     private void startWork() {
         // Start assigned connectors and tasks
         List<Callable<Void>> callables = new ArrayList<>();
@@ -1932,6 +1966,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             log.debug("Received assignment: {}", assignment);
             log.debug("Currently running assignment: {}", runningAssignment);
 
+            // 遍历分配给当前节点的 Connector，与当前正在运行的 Connector 进行比较，找出需要启动的 Connector，并将其添加到 callables 列表中
             for (String connectorName : assignmentDifference(assignment.connectors(), runningAssignment.connectors())) {
                 callables.add(getConnectorStartingCallable(connectorName));
             }
@@ -2077,6 +2112,12 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         worker.startConnector(connectorName, configProps, ctx, this, initialState, onInitialStateChange);
     }
 
+    /**
+     * 获取 Connector 启动的回调函数
+     *
+     * @param connectorName
+     * @return
+     */
     private Callable<Void> getConnectorStartingCallable(final String connectorName) {
         return () -> {
             try {
@@ -2378,6 +2419,9 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         return null;
     }
 
+    /**
+     * Connector 配置更新监听器
+     */
     public class ConfigUpdateListener implements ConfigBackingStore.UpdateListener {
         @Override
         public void onConnectorConfigRemove(String connector) {
@@ -2401,7 +2445,9 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             // a rebalance, so we need to be careful about what operation we request.
             synchronized (DistributedHerder.this) {
                 if (!configState.contains(connector))
+                    // 新增 Connector，需要 Connector 重平衡
                     needsReconfigRebalance = true;
+                // 添加到需要更新配置的 Connector 集合中
                 connectorConfigUpdates.add(connector);
             }
             member.wakeup();

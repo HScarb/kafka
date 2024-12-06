@@ -78,7 +78,9 @@ import static org.apache.kafka.connect.mirror.MirrorUtils.SOURCE_CLUSTER_KEY;
 import static org.apache.kafka.connect.mirror.MirrorUtils.TOPIC_KEY;
 import static org.apache.kafka.connect.mirror.MirrorUtils.adminCall;
 
-/** Replicate data, configuration, and ACLs between clusters.
+/**
+ * 同步源集群中的 Topic 消息数据到目标集群
+ * Replicate data, configuration, and ACLs between clusters.
  *
  *  @see MirrorSourceConfig for supported config properties.
  */
@@ -164,11 +166,16 @@ public class MirrorSourceConnector extends SourceConnector {
         useIncrementalAlterConfigs =  !config.useIncrementalAlterConfigs().equals(MirrorSourceConfig.NEVER_USE_INCREMENTAL_ALTER_CONFIGS);
         offsetSyncsAdminClient = config.forwardingAdmin(config.offsetSyncsTopicAdminConfig());
         scheduler = new Scheduler(getClass(), config.entityLabel(), config.adminTimeout());
+        // 创建 Offset 同步 Topic，存储消息在源集群和目标集群之间同步的 offset 映射信息（即 OffsetSync 消息）用于消费位点翻译。
         scheduler.execute(this::createOffsetSyncsTopic, "creating upstream offset-syncs topic");
+        // 查询出源端和目标端需要同步的 Topic 详情，放入 knownSourceTopicPartitions 和 knownTargetTopicPartitions
         scheduler.execute(this::loadTopicPartitions, "loading initial set of topic-partitions");
+        // 在目标集群中创建 Topic 和 Partition，与源集群对齐
         scheduler.execute(this::computeAndCreateTopicPartitions, "creating downstream topic-partitions");
+        // 刷新目标集群的 Topic Partition 信息
         scheduler.execute(this::refreshKnownTargetTopics, "refreshing known target topics");
         scheduler.scheduleRepeating(this::syncTopicAcls, config.syncTopicAclsInterval(), "syncing topic ACLs");
+        // 定时同步最新的 Topic 配置
         scheduler.scheduleRepeating(this::syncTopicConfigs, config.syncTopicConfigsInterval(),
             "syncing topic configs");
         scheduler.scheduleRepeatingDelayed(this::refreshTopicPartitions, config.refreshTopicsInterval(),
@@ -439,6 +446,7 @@ public class MirrorSourceConnector extends SourceConnector {
     }
 
     void computeAndCreateTopicPartitions() throws ExecutionException, InterruptedException {
+        // 将源和目标集群中每个 Topic 的 Partition 数量收集到 Map
         // get source and target topics with respective partition counts
         Map<String, Long> sourceTopicToPartitionCounts = knownSourceTopicPartitions.stream()
                 .collect(Collectors.groupingBy(TopicPartition::topic, Collectors.counting())).entrySet().stream()
@@ -449,20 +457,26 @@ public class MirrorSourceConnector extends SourceConnector {
 
         Set<String> knownSourceTopics = sourceTopicToPartitionCounts.keySet();
         Set<String> knownTargetTopics = targetTopicToPartitionCounts.keySet();
+        // 源 Topic 到目标 Topic 的映射表
         Map<String, String> sourceToRemoteTopics = knownSourceTopics.stream()
                 .collect(Collectors.toMap(Function.identity(), this::formatRemoteTopic));
 
+        // 用 partitioningBy 来将 knownSourceTopics 分为目标集群中存在或不存在的两组
         // compute existing and new source topics
         Map<Boolean, Set<String>> partitionedSourceTopics = knownSourceTopics.stream()
                 .collect(Collectors.partitioningBy(sourceTopic -> knownTargetTopics.contains(sourceToRemoteTopics.get(sourceTopic)),
                         Collectors.toSet()));
+        // 目标集群中存在的源 Topic
         Set<String> existingSourceTopics = partitionedSourceTopics.get(true);
+        // 目标集群中不存在的源 Topic
         Set<String> newSourceTopics = partitionedSourceTopics.get(false);
 
+        // 在目标集群中创建不存在的 Topic
         // create new topics
         if (!newSourceTopics.isEmpty())
             createNewTopics(newSourceTopics, sourceTopicToPartitionCounts);
 
+        // 识别 Partition 数量多于目标 Topic 的源 Topic
         // compute topics with new partitions
         Map<String, Long> sourceTopicsWithNewPartitions = existingSourceTopics.stream()
                 .filter(sourceTopic -> {
@@ -471,6 +485,7 @@ public class MirrorSourceConnector extends SourceConnector {
                 })
                 .collect(Collectors.toMap(Function.identity(), sourceTopicToPartitionCounts::get));
 
+        // 增加目标集群中 Partition 数量
         // create new partitions
         if (!sourceTopicsWithNewPartitions.isEmpty()) {
             Map<String, NewPartitions> newTargetPartitions = sourceTopicsWithNewPartitions.entrySet().stream()

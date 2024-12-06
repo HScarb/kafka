@@ -827,6 +827,8 @@ public class KafkaConfigBackingStore extends KafkaTopicBasedBackingStore impleme
     }
 
     /**
+     * 同步发送配置消息到管理 Kafka 中
+     *
      * Send one or more records to the config topic synchronously. Note that {@link #claimWritePrivileges()} must be
      * successfully invoked before calling this method if this store is configured to use a fencable writer.
      * @param keyValues the list of producer record key/value pairs
@@ -893,6 +895,9 @@ public class KafkaConfigBackingStore extends KafkaTopicBasedBackingStore impleme
         return "connector configurations";
     }
 
+    /**
+     * 从 KafkaConfigBackingConfig 的 Topic 消费消息的回调函数
+     */
     private class ConsumeCallback implements Callback<ConsumerRecord<String, byte[]>> {
         @Override
         public void onCompletion(Throwable error, ConsumerRecord<String, byte[]> record) {
@@ -912,13 +917,17 @@ public class KafkaConfigBackingStore extends KafkaTopicBasedBackingStore impleme
             // *next record*, not the last one consumed.
             offset = record.offset() + 1;
 
+            // 处理不同类型的配置消息
             if (record.key().startsWith(TARGET_STATE_PREFIX)) {
+                // 目标状态消息
                 String connectorName = record.key().substring(TARGET_STATE_PREFIX.length());
                 processTargetStateRecord(connectorName, value);
             } else if (record.key().startsWith(CONNECTOR_PREFIX)) {
+                // Connector 配置消息
                 String connectorName = record.key().substring(CONNECTOR_PREFIX.length());
                 processConnectorConfigRecord(connectorName, value);
             } else if (record.key().startsWith(TASK_PREFIX)) {
+                // 任务配置消息
                 ConnectorTaskId taskId = parseTaskId(record.key());
                 if (taskId == null) {
                     log.error("Ignoring task configuration because {} couldn't be parsed as a task config key", record.key());
@@ -926,15 +935,18 @@ public class KafkaConfigBackingStore extends KafkaTopicBasedBackingStore impleme
                 }
                 processTaskConfigRecord(taskId, value);
             } else if (record.key().startsWith(COMMIT_TASKS_PREFIX)) {
+                // 任务提交消息
                 String connectorName = record.key().substring(COMMIT_TASKS_PREFIX.length());
                 processTasksCommitRecord(connectorName, value);
             } else if (record.key().startsWith(RESTART_PREFIX)) {
+                // 重启消息
                 RestartRequest request = recordToRestartRequest(record, value);
                 // Only notify the listener if this backing store is already successfully started (having caught up the first time)
                 if (request != null && started) {
                     updateListener.onRestartRequest(request);
                 }
             } else if (record.key().startsWith(TASK_COUNT_RECORD_PREFIX)) {
+                // 处理任务计数消息
                 String connectorName = record.key().substring(TASK_COUNT_RECORD_PREFIX.length());
                 processTaskCountRecord(connectorName, value);
             } else if (record.key().equals(SESSION_KEY_KEY)) {
@@ -1008,9 +1020,11 @@ public class KafkaConfigBackingStore extends KafkaTopicBasedBackingStore impleme
     }
 
     private void processConnectorConfigRecord(String connectorName, SchemaAndValue value) {
+        // 是否删除 Connector 配置
         boolean removed = false;
         synchronized (lock) {
             if (value.value() == null) {
+                // 如果传入的 value 值为 null，表示需要删除该 Connector 的配置，从 connectorConfigs 中移除并设置 removed = true
                 // Connector deletion will be written as a null value
                 log.info("Successfully processed removal of connector '{}'", connectorName);
                 connectorConfigs.remove(connectorName);
@@ -1019,6 +1033,7 @@ public class KafkaConfigBackingStore extends KafkaTopicBasedBackingStore impleme
                 deferredTaskUpdates.remove(connectorName);
                 removed = true;
             } else {
+                // 传入的 value 非空，表示需要更新或添加 Connector 配置
                 // Connector configs can be applied and callbacks invoked immediately
                 if (!(value.value() instanceof Map)) {
                     log.error("Ignoring configuration for connector '{}' because it is in the wrong format: {}", connectorName, className(value.value()));
@@ -1034,6 +1049,7 @@ public class KafkaConfigBackingStore extends KafkaTopicBasedBackingStore impleme
                 log.debug("Updating configuration for connector '{}'", connectorName);
                 @SuppressWarnings("unchecked")
                 Map<String, String> stringsConnectorConfig = (Map<String, String>) newConnectorConfig;
+                // 更新到 connectorConfigs 配置表
                 connectorConfigs.put(connectorName, stringsConnectorConfig);
 
                 // Set the initial state of the connector to STARTED, which ensures that any connectors
@@ -1046,6 +1062,7 @@ public class KafkaConfigBackingStore extends KafkaTopicBasedBackingStore impleme
             if (removed)
                 updateListener.onConnectorConfigRemove(connectorName);
             else
+                // 通知 Connector 配置更新事件
                 updateListener.onConnectorConfigUpdate(connectorName);
         }
     }
